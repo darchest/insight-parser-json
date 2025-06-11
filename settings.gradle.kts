@@ -3,8 +3,5 @@ plugins {
 }
 rootProject.name = "insight-parser-json"
 
-include(":insight")
-project(":insight").projectDir = file("../insight")
-
 include(":insight-vendor-postgresql")
 project(":insight-vendor-postgresql").projectDir = file("../insight-vendor-postgresql")
