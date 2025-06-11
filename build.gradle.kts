@@ -14,8 +14,6 @@ repositories {
 
 dependencies {
     implementation("org.darchest:insight:1.0-SNAPSHOT")
-    // TODO Убрать зависимость psql
-    implementation(project(":insight-vendor-postgresql"))
 
     implementation("com.google.code.gson:gson:2.10.1")
 

@@ -8,12 +8,7 @@ package org.darchest.insight.parser.json
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import org.darchest.insight.*
-import org.darchest.insight.vendor.postgresql.PostgresArrayContains
-import org.darchest.insight.vendor.postgresql.PostgresILike
-import org.darchest.insight.vendor.postgresql.PostgresInOperator
-import org.darchest.insight.vendor.postgresql.UUIDArray
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -23,8 +18,16 @@ typealias JsonExprOperationHandler = (dataSource: SqlDataSource, jsonExpression:
 
 object ExpressionParser {
     /*
-    { prop: <codeName>, op: <operator = eq>, value: <value> }
-    { op: <or/and>, exprs: [<expr1>, ..., ,exprN>] }
+    Where format:
+        Common format:
+            { prop: <codeName>, op: <operator = eq>, value: <value> }
+            { op: <or/and>, exprs: [<expr1>, ..., ,exprN>] }
+
+        Low-level format:
+            { op: <operator>, ... }
+
+    Sort format:
+        [{ prop: <codeName>, dir: <asc/desc> }, ...]
      */
 
     private val df: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.of("Europe/Moscow"))
@@ -38,14 +41,11 @@ object ExpressionParser {
         Long::class.java to { c, json -> (c as TableColumn<Long, *>).invoke(json.asLong) },
         Boolean::class.java to { c, json -> (c as TableColumn<Boolean, *>).invoke(json.asBoolean) },
         Instant::class.java to { c, json -> (c as TableColumn<Instant, *>).invoke(if (json.asString.isEmpty()) Instant.ofEpochMilli(Long.MIN_VALUE) else df.parse(json.asString).query(Instant::from)) },
-        UUIDArray::class.java to { c, json -> (c as TableColumn<UUIDArray, *>).invoke(UUIDArray(JsonParser.parseString(json.asString).asJsonArray.map { it.asUUID })) },
     )
 
     init {
         registerOpHandler("and", ::opAndOrHandler)
         registerOpHandler("or", ::opAndOrHandler)
-        registerOpHandler("ilike", ::opIlikeHandler)
-        registerOpHandler("arr_in", ::opArrInHandler)
     }
 
     fun parseWhere(dataSource: SqlDataSource, jsonExpression: JsonElement): SqlValue<*, *>? {
@@ -105,28 +105,6 @@ object ExpressionParser {
         return dataSource.vendor().createLogicalOperation(enumOp, exprsObj)
     }
 
-    private fun opIlikeHandler(dataSource: SqlDataSource, jsonExpression: JsonObject): SqlValue<*, *> {
-        val prop = jsonExpression.get("prop").asString
-        val dsProp = dataSource.sqlValueByCodeName(prop) ?: throw RuntimeException("$prop is undefined")
-
-        val jsonValue = jsonExpression.get("value")
-        return PostgresILike(dsProp, SqlConst("%${jsonValue.asString}%", String::class.java, dsProp.sqlType))
-    }
-
-    private fun opArrInHandler(dataSource: SqlDataSource, jsonExpression: JsonObject): SqlValue<*, *> {
-        val prop = jsonExpression.get("prop").asString
-        val dsProp = dataSource.sqlValueByCodeName(prop) ?: throw RuntimeException("$prop is undefined")
-
-        val jsonValue = jsonExpression.get("value")
-
-        val arr = UUIDArray()
-        if (jsonValue.isJsonArray)
-            arr.addAll(jsonValue.asJsonArray.map { it.asUUID })
-        else
-            arr.add(jsonValue.asUUID)
-        return PostgresArrayContains(dsProp, SqlConst(arr, UUIDArray::class.java, dsProp.sqlType))
-    }
-
     private fun elseHandler(dataSource: SqlDataSource, jsonExpression: JsonObject): SqlValue<*, *> {
         val prop = jsonExpression.get("prop").asString
         val dsProp = dataSource.sqlValueByCodeName(prop) ?: throw RuntimeException("$prop is undefined")
@@ -136,17 +114,9 @@ object ExpressionParser {
 
         val enumOp = ComparisonOperation.Operator.valueOf(op.lowercase(Locale.getDefault()))
 
-        if (op == "eq" && jsonValue.isJsonArray) {
-            val consts = jsonValue.asJsonArray.map { j -> SqlConst(j.asString, String::class.java, dsProp.sqlType) }
-            return PostgresInOperator(dsProp, consts)
-        } else if (op == "neq" && jsonValue.isJsonArray) {
-            val consts = jsonValue.asJsonArray.map { j -> SqlConst(j.asString, String::class.java, dsProp.sqlType) }
-            return PostgresInOperator(dsProp, consts, true)
-        } else {
-            val value = jsonValue.asString
-            val valueObj = SqlConst(value, String::class.java, dsProp.sqlType)
-            return dataSource.vendor().createComparisonOperation(dsProp, enumOp, valueObj)
-        }
+        val value = jsonValue.asString
+        val valueObj = SqlConst(value, String::class.java, dsProp.sqlType)
+        return dataSource.vendor().createComparisonOperation(dsProp, enumOp, valueObj)
     }
 
     private fun parseSortRule(dataSource: SqlDataSource, rule: JsonObject): SortInfo {
